@@ -1,0 +1,1 @@
+This is a basic OCF script I wrote so that Heartbeat can manage nginx instances. We use this in production, and it works fairly well. As usual with open source projects, feel free to use it, contribute back, whatever. 

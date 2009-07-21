@@ -1,0 +1,194 @@
+#!/bin/sh
+#
+#	usage: $0 {start|stop|status|monitor|meta-data}
+#
+#	The "start" arg starts nginx.
+#
+#	The "stop" arg stops it.
+#
+# OCF parameters:
+# OCF_RESKEY_conffile
+#
+# Note:This RA requires that the nginx config files has a "pid file" 
+# entry so that it is able to act on the correct process
+##########################################################################
+# Initialization:
+
+. ${OCF_ROOT}/resource.d/heartbeat/.ocf-shellfuncs
+
+USAGE="Usage: $0 {start|stop|status|validate-all}";
+COMMAND=/usr/local/sbin/nginx
+TESTCMD=" -t"
+
+##########################################################################
+
+usage() 
+{
+	echo $USAGE >&2
+}
+
+meta_data() 
+{
+cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="nginx">
+<version>1.0</version>
+<longdesc lang="en">
+This script manages nginx
+</longdesc>
+<shortdesc lang="en">OCF Resource Agent compliant nginx script.</shortdesc>
+
+<parameters>
+
+<parameter name="conffile">
+<longdesc lang="en">
+The nginx configuration file name with full path. 
+For example, "/opt/cfg/common/nginx-edge/https1.conf"
+</longdesc>
+<shortdesc lang="en">Configuration file name with full path</shortdesc>
+<content type="string" default="none" />
+</parameter>
+</parameters>
+
+<actions>
+<action name="start" timeout="90"/>
+<action name="stop" timeout="100"/>
+<action name="monitor" depth="10" timeout="30s" interval="60s" start-delay="1s" />
+<action name="validate-all" timeout="30s"/>
+<action name="meta-data"  timeout="5s"/>
+</actions>
+</resource-agent>
+END
+exit $OCF_SUCCESS
+}
+
+
+nginx_status()
+{
+	if [ -n "$PIDFILE" -a -f $PIDFILE ]; then
+		# nginx is probably running
+                if [ -s $PIDFILE ]; then
+			PID=`cat $PIDFILE`
+			if kill -0 $PID; then
+				ocf_log info "nginx daemon running"
+				return $OCF_SUCCESS
+			else
+				ocf_log info "nginx daemon is not running but pid file exists"
+                                rm -f $PIDFILE 2>/dev/null
+				return $OCF_ERR_GENERIC
+			fi
+		else
+			ocf_log err "PID file empty!"
+                        rm -f $PIDFILE 2>/dev/null
+			return $OCF_ERR_GENERIC
+		fi
+	fi
+	# nginx is not running
+	ocf_log info "nginx is not running"
+	return $OCF_NOT_RUNNING
+}
+
+nginx_start()
+{
+	# if nginx is running return success
+	nginx_status
+	retVal=$?
+	if [ $retVal -eq $OCF_SUCCESS ]; then
+		exit $OCF_SUCCESS
+	elif [ $retVal -ne $OCF_NOT_RUNNING ]; then
+		ocf_log err "Error. Unknown status. Trying to start anyway."
+                # kill the orphaned processes with no pid files
+                ORPHAN=`ps auxw | grep nginx | grep -v "grep" | grep -c "$OCF_RESKEY_conffile"`
+                if [ $ORPHAN -eq 1 ]; then
+                        # kill the orphans
+                        kill -TERM `ps auxw | grep nginx | grep -v "grep" | grep "$OCF_RESKEY_conffile" | awk '// {print $2}'`
+                fi
+	fi
+	COMMAND="$COMMAND -c $OCF_RESKEY_conffile"
+	if  grep -v "^#" "$OCF_RESKEY_conffile" | grep "pid" > /dev/null ; then
+		$COMMAND;
+		if [ $? -ne 0 ]; then
+			ocf_log err "Error. nginx returned error $?."
+                        rm -f $PIDFILE 2>/dev/null
+			exit $OCF_ERR_GENERIC
+		fi
+	else
+		ocf_log err "Error. \"pid\" entry required in the nginx config file."
+		return $OCF_ERR_GENERIC
+	fi
+
+	ocf_log info "Started nginx."
+	exit $OCF_SUCCESS
+}
+
+
+nginx_stop()
+{
+	if nginx_status ; then
+		PID=`cat $PIDFILE`
+		if [ -n "$PID" ] ; then
+			kill -TERM $PID
+			if [ $? -ne 0 ]; then
+				kill -9 $PID
+				if [ $? -ne 0 ]; then
+					ocf_log err "Error. Could not stop nginx daemon."
+					return $OCF_ERR_GENERIC
+				fi
+			fi
+		fi
+                rm -f $PIDFILE 2>/dev/null
+	fi
+	ocf_log info "Stopped nginx daemon."
+	exit $OCF_SUCCESS
+}
+
+nginx_validate_all()
+{
+	if [ -n "$OCF_RESKEY_conffile" -a ! -f "$OCF_RESKEY_conffile" ]; then
+		ocf_log err "Config file $OCF_RESKEY_conffile does not exist."
+		exit $OCF_ERR_ARGS
+	fi
+	if  grep -v "^#" "$OCF_RESKEY_conffile" | grep "pid" > /dev/null ; then
+		:
+	else
+		ocf_log err "Error. \"pid\" entry required in the nginx config file."
+		return $OCF_ERR_GENERIC
+	fi
+	return $OCF_SUCCESS
+}
+
+
+#
+# Main
+#
+ 
+if [ $# -ne 1 ]; then
+	usage
+	exit $OCF_ERR_ARGS
+fi
+
+PIDFILE=`grep -v "^#" $OCF_RESKEY_conffile | grep "pid" | awk '/pid/ {print $2}' | sed -e 's/;//'`
+
+case $1 in
+	start)	nginx_start;;
+	
+	stop)	nginx_stop;;
+
+	status)	nginx_status;;
+
+        monitor) nginx_status;;
+  
+        meta-data) meta_data;;
+
+	validate-all)	nginx_validate_all;;
+
+	usage)	usage
+		exit $OCF_SUCCESS
+		;;
+
+	*)	usage
+		exit $OCF_ERR_UNIMPLEMENTED
+		;;
+esac
+
